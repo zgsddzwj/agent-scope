@@ -17,6 +17,11 @@ def structured_arguments(schema: dict[str, Any]) -> dict[str, Any]:
             "下一步补充重试与幂等键，并通知测试组复测。"
         )
         return {name: text for name in properties}
+    if "intent" in properties:
+        return {
+            "intent": "meal_planning",
+            "reason": "请求涉及人数、天数、过敏约束和菜单规划。",
+        }
     if "destination" in properties:
         return {
             "destination": "杭州",
@@ -50,16 +55,26 @@ def choose_response(body: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
         item["function"]["name"]: item["function"] for item in tools
     }
     tool_choice = body.get("tool_choice")
-    if (
-        isinstance(tool_choice, dict)
-        and tool_choice.get("function", {}).get("name")
-        == "generate_structured_output"
-    ):
-        function = tool_by_name["generate_structured_output"]
+    structured_tool_name = (
+        tool_choice.get("function", {}).get("name")
+        if isinstance(tool_choice, dict)
+        else None
+    )
+    if structured_tool_name in {"generate_structured_output", "GenerateStructuredOutput"}:
+        function = tool_by_name[structured_tool_name]
         return "tool_calls", [
             {
                 "id": "call_structured",
-                "name": "generate_structured_output",
+                "name": structured_tool_name,
+                "arguments": structured_arguments(function["parameters"]),
+            },
+        ]
+    if "GenerateStructuredOutput" in tool_by_name:
+        function = tool_by_name["GenerateStructuredOutput"]
+        return "tool_calls", [
+            {
+                "id": "call_structured",
+                "name": "GenerateStructuredOutput",
                 "arguments": structured_arguments(function["parameters"]),
             },
         ]

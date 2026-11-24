@@ -33,7 +33,7 @@ def model_name() -> str:
     raise SystemExit("AGENT_PROVIDER 仅支持 dashscope 或 openai。")
 
 
-def create_model(*, stream: bool = True, context_size: int | None = None):
+def create_model(*, stream: bool = True, context_size: int | None = None, track: bool = True):
     provider = provider_name()
     temperature = float(os.getenv("TEMPERATURE", "0.3"))
     kwargs: dict[str, Any] = {
@@ -62,7 +62,8 @@ def create_model(*, stream: bool = True, context_size: int | None = None):
             model=model_name(),
             **kwargs,
         )
-        _MODELS.append(model)
+        if track:
+            _MODELS.append(model)
         return model
 
     if provider == "openai":
@@ -84,7 +85,8 @@ def create_model(*, stream: bool = True, context_size: int | None = None):
             model=model_name(),
             **kwargs,
         )
-        _MODELS.append(model)
+        if track:
+            _MODELS.append(model)
         return model
 
     raise SystemExit("AGENT_PROVIDER 仅支持 dashscope 或 openai。")
@@ -102,11 +104,12 @@ def build_agent(
     context_config: Any = None,
     react_config: Any = None,
     multi_agent: bool = False,
+    model: Any = None,
 ):
     from agentscope.agent import Agent, ReActConfig
     from agentscope.tool import FunctionTool, Toolkit, ToolBase
 
-    model = create_model(stream=stream, context_size=context_size)
+    model = model or create_model(stream=stream, context_size=context_size)
     if multi_agent:
         if provider_name() == "dashscope":
             from agentscope.formatter import DashScopeMultiAgentFormatter

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -240,8 +241,11 @@ def test_password_hashing_and_token_validation(monkeypatch):
     encoded = hash_password("correct-password")
     assert verify_password("correct-password", encoded)
     assert not verify_password("wrong-password", encoded)
-    token, _ = create_access_token({"id": "u1", "username": "demo", "role": "user"})
+    token, _ = create_access_token(
+        {"id": "u1", "username": "demo", "role": "user", "tenant_id": "t1"},
+    )
     assert decode_access_token(token)["sub"] == "u1"
+    assert decode_access_token(token)["tenant_id"] == "t1"
 
 
 def test_web_app_requires_auth_and_streams_business_tools(web_client):
@@ -298,24 +302,35 @@ def test_business_tools_are_persistent_and_user_scoped(web_client):
         get_user_by_username,
         list_orders,
         list_tickets,
+        list_user_tenants,
     )
 
     async def invoke():
         demo = await get_user_by_username("demo")
         admin = await get_user_by_username("admin")
-        assert len(await list_orders(demo["id"])) == 3
-        assert await list_orders(admin["id"]) == []
-        ticket = await create_ticket(demo["id"], "测试工单", "验证数据隔离", "normal")
+        demo_tenants = await list_user_tenants(demo["id"])
+        admin_tenants = await list_user_tenants(admin["id"])
+        demo_tenant = next(item for item in demo_tenants if item["is_default"])
+        admin_tenant = next(item for item in admin_tenants if item["is_default"])
+        assert len(await list_orders(demo_tenant["id"], demo["id"])) == 3
+        assert await list_orders(admin_tenant["id"], admin["id"]) == []
+        ticket = await create_ticket(
+            demo_tenant["id"],
+            demo["id"],
+            "测试工单",
+            "验证数据隔离",
+            "normal",
+        )
         with pytest.raises(LookupError):
-            await close_ticket(admin["id"], ticket["ticket_id"])
-        assert len(await list_tickets(demo["id"])) == 2
-        return demo
+            await close_ticket(admin_tenant["id"], admin["id"], ticket["ticket_id"])
+        assert len(await list_tickets(demo_tenant["id"], demo["id"])) == 2
+        return demo, demo_tenant
 
     asyncio.run(invoke())
 
 
 def test_write_tool_waits_for_confirmation_and_is_audited(web_client):
-    from business import list_audit_logs, list_tickets, get_user_by_username
+    from business import get_user_by_username, list_audit_logs, list_tickets, list_user_tenants
 
     headers = login(web_client)
     session_id = create_web_session(web_client, headers)
@@ -334,7 +349,9 @@ def test_write_tool_waits_for_confirmation_and_is_audited(web_client):
 
     async def ticket_count():
         demo = await get_user_by_username("demo")
-        return len(await list_tickets(demo["id"]))
+        tenants = await list_user_tenants(demo["id"])
+        tenant = next(item for item in tenants if item["is_default"])
+        return len(await list_tickets(tenant["id"], demo["id"]))
 
     assert asyncio.run(ticket_count()) == 1
     resumed = web_client.post(
@@ -352,7 +369,10 @@ def test_write_tool_waits_for_confirmation_and_is_audited(web_client):
     assert asyncio.run(ticket_count()) == 2
 
     async def actions():
-        return {item["action"] for item in await list_audit_logs()}
+        demo = await get_user_by_username("demo")
+        tenants = await list_user_tenants(demo["id"])
+        tenant = next(item for item in tenants if item["is_default"])
+        return {item["action"] for item in await list_audit_logs(tenant["id"])}
 
     assert {"confirm_tools", "create_ticket"} <= asyncio.run(actions())
 
@@ -369,3 +389,127 @@ def test_web_app_returns_clear_configuration_error(web_client, monkeypatch):
     )
     assert response.status_code == 503
     assert "API Key" in response.json()["detail"]
+
+
+def test_tenant_switch_isolates_sessions_and_orders(web_client):
+    logged_in = web_client.post(
+        "/api/auth/login",
+        json={"username": "demo", "password": "Demo-test-password-123"},
+    )
+    assert logged_in.status_code == 200
+    payload = logged_in.json()
+    default_headers = {"Authorization": f"Bearer {payload['access_token']}"}
+    default_tenant = payload["user"]["tenant_id"]
+    other_tenant = next(item["id"] for item in payload["tenants"] if item["id"] != default_tenant)
+    session_id = create_web_session(web_client, default_headers)
+
+    switched = web_client.post(
+        "/api/auth/tenant",
+        headers=default_headers,
+        json={"tenant_id": other_tenant},
+    )
+    assert switched.status_code == 200
+    other_headers = {"Authorization": f"Bearer {switched.json()['access_token']}"}
+    assert switched.json()["user"]["tenant_id"] == other_tenant
+    assert web_client.get(f"/api/sessions/{session_id}", headers=other_headers).status_code == 404
+    assert web_client.get("/api/sessions", headers=other_headers).json() == []
+
+    other_session = create_web_session(web_client, other_headers)
+    response = web_client.post(
+        "/api/chat",
+        headers=other_headers,
+        json={"session_id": other_session, "message": "查询我的全部订单"},
+    )
+    assert response.status_code == 200
+    assert "SO-DEMO-OTHER-1001" in response.text
+    assert "SO-DEMO-1001" not in response.text
+
+    admin_login = web_client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "Admin-test-password-123"},
+    ).json()
+    forbidden = web_client.post(
+        "/api/auth/tenant",
+        headers={"Authorization": f"Bearer {admin_login['access_token']}"},
+        json={"tenant_id": other_tenant},
+    )
+    assert forbidden.status_code == 403
+
+
+def test_meal_subagent_orchestration_runs_in_order(web_client):
+    response = web_client.post(
+        "/api/meal-plan",
+        headers=login(web_client),
+        json={"message": "为 4 位成人规划 3 天菜单，其中一人对花生过敏。"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["route"]["intent"] == "meal_planning"
+    assert [item["name"] for item in payload["stages"]] == [
+        "route",
+        "requirements",
+        "draft",
+        "review",
+        "final",
+    ]
+    assert all(item["status"] == "completed" for item in payload["stages"])
+    assert payload["final"]
+
+
+def test_legacy_database_is_backfilled_with_tenant_ids(monkeypatch, tmp_path):
+    from auth import hash_password
+    from business import init_db
+
+    path = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.executescript(
+            """
+            CREATE TABLE users (
+                id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL, role TEXT NOT NULL, created_at TEXT NOT NULL
+            );
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, user_id TEXT NOT NULL, order_no TEXT NOT NULL UNIQUE,
+                product TEXT NOT NULL, amount_cents INTEGER NOT NULL, status TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE tickets (
+                id TEXT PRIMARY KEY, user_id TEXT NOT NULL, subject TEXT NOT NULL,
+                description TEXT NOT NULL, priority TEXT NOT NULL, status TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, user_id TEXT NOT NULL, title TEXT NOT NULL,
+                state_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, action TEXT NOT NULL,
+                entity_type TEXT NOT NULL, entity_id TEXT NOT NULL,
+                details_json TEXT NOT NULL, created_at TEXT NOT NULL
+            );
+            """,
+        )
+        db.execute(
+            "INSERT INTO users VALUES (?, ?, ?, ?, ?)",
+            ("legacy-user", "legacy", hash_password("Legacy-password-123"), "user", "2026-01-01"),
+        )
+        db.execute(
+            "INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("legacy-order", "legacy-user", "LEGACY-1", "旧数据", 100, "paid", "2026-01-01", "2026-01-01"),
+        )
+
+    monkeypatch.setenv("DATABASE_PATH", str(path))
+    monkeypatch.setenv("SEED_DEMO_DATA", "false")
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_PASSWORD", "Admin-test-password-123")
+    monkeypatch.setenv("DEMO_USERNAME", "demo")
+    monkeypatch.setenv("DEMO_USER_PASSWORD", "Demo-test-password-123")
+    asyncio.run(init_db())
+
+    with sqlite3.connect(path) as db:
+        tenant_id = db.execute("SELECT tenant_id FROM orders WHERE id = 'legacy-order'").fetchone()[0]
+        membership = db.execute(
+            "SELECT tenant_id FROM tenant_memberships WHERE user_id = 'legacy-user'",
+        ).fetchone()[0]
+    assert tenant_id
+    assert tenant_id == membership

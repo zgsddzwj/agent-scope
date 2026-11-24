@@ -17,7 +17,8 @@ DEMOS = {
     "07": ("TeamPipeline 团队流水线", "demos.07_team_pipeline"),
     "08": ("上下文压缩", "demos.08_context_management"),
     "09": ("链路追踪与预算控制", "demos.09_observability"),
-    "10": ("认证业务 Web 应用", "web_app"),
+    "10": ("认证多租户业务 Web 应用", "web_app"),
+    "11": ("子 Agent 串行编排", "demos.11_meal_subagents"),
 }
 
 

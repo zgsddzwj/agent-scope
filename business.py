@@ -178,6 +178,10 @@ async def migrate_and_backfill_tenants() -> None:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_tickets_tenant_user ON tickets(tenant_id, user_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_sessions_tenant_user ON sessions(tenant_id, user_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_audit_tenant ON audit_logs(tenant_id)")
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_one_default_membership "
+            "ON tenant_memberships(user_id) WHERE is_default = 1",
+        )
 
 
 async def ensure_default_membership(
@@ -700,20 +704,21 @@ async def list_audit_logs(tenant_id: str, limit: int = 50) -> list[dict[str, Any
 
 
 def make_business_toolkit(user: dict[str, Any]) -> Toolkit:
+    tenant_id = user["tenant_id"]
     user_id = user["id"]
 
     async def list_my_orders() -> str:
-        """查询当前登录用户的全部订单，不需要参数。"""
-        return json.dumps(await list_orders(user_id), ensure_ascii=False)
+        """查询当前登录用户在当前租户中的全部订单，不需要参数。"""
+        return json.dumps(await list_orders(tenant_id, user_id), ensure_ascii=False)
 
     async def get_order_status(order_no: str) -> str:
-        """按订单号查询当前登录用户的订单状态，例如 SO-DEMO-1001。"""
-        order = await get_order(user_id, order_no)
+        """按订单号查询当前租户中属于当前用户的订单状态。"""
+        order = await get_order(tenant_id, user_id, order_no)
         return json.dumps(order if order is not None else {"error": "订单不存在"}, ensure_ascii=False)
 
     async def list_my_tickets(status: Literal["all", "open", "closed"] = "all") -> str:
-        """查询当前登录用户的工单，status 可为 all、open、closed。"""
-        return json.dumps(await list_tickets(user_id, status), ensure_ascii=False)
+        """查询当前登录用户在当前租户中的工单。"""
+        return json.dumps(await list_tickets(tenant_id, user_id, status), ensure_ascii=False)
 
     async def create_support_ticket(
         subject: str,
@@ -721,13 +726,13 @@ def make_business_toolkit(user: dict[str, Any]) -> Toolkit:
         priority: Priority = "normal",
     ) -> str:
         """为当前登录用户创建客服工单。这是写操作，必须经过用户确认。"""
-        ticket = await create_ticket(user_id, subject, description, priority)
+        ticket = await create_ticket(tenant_id, user_id, subject, description, priority)
         return json.dumps(ticket, ensure_ascii=False)
 
     async def close_my_ticket(ticket_id: str) -> str:
-        """关闭当前登录用户的未关闭工单。这是写操作，必须经过用户确认。"""
+        """关闭当前租户中属于当前登录用户的未关闭工单，需要用户确认。"""
         try:
-            result = await close_ticket(user_id, ticket_id)
+            result = await close_ticket(tenant_id, user_id, ticket_id)
         except LookupError as error:
             return json.dumps({"error": str(error)}, ensure_ascii=False)
         return json.dumps(result, ensure_ascii=False)
@@ -741,8 +746,8 @@ def make_business_toolkit(user: dict[str, Any]) -> Toolkit:
     ]
     if user["role"] == "admin":
         async def list_all_tickets(status: Literal["all", "open", "closed"] = "all") -> str:
-            """管理员查询所有用户的工单，status 可为 all、open、closed。"""
-            return json.dumps(await list_all_tickets(status), ensure_ascii=False)
+            """管理员查询当前租户内所有用户的工单。"""
+            return json.dumps(await list_all_tickets(tenant_id, status), ensure_ascii=False)
 
         tools.append(FunctionTool(list_all_tickets, is_read_only=True))
     return Toolkit(tools=tools)

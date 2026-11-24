@@ -1,6 +1,6 @@
 # AgentScope 2.0.12 学习与业务接入指南
 
-本项目已经接入 AgentScope 2.0.12、百炼模型、SQLite 业务工具、持久化会话、JWT 登录鉴权、写操作人工审批和 Docker Compose 部署。
+本项目已经接入 AgentScope 2.0.12、百炼模型、SQLite 业务工具、持久化会话、JWT 登录鉴权、租户隔离、写操作人工审批、子 Agent 串行编排和 Docker Compose 部署。
 
 > 安全提醒：API Key 已经写入本机 `.env`，该文件被 `.gitignore` 和 `.dockerignore` 忽略。由于 Key 曾出现在聊天记录中，完成验证后建议在百炼控制台轮换。登录账号和随机密码位于 `.env` 的 `BOOTSTRAP_ADMIN_*` 与 `DEMO_*` 配置中，不要提交或公开这些值。
 
@@ -8,23 +8,37 @@
 
 ```text
 浏览器
-  │  JWT + SSE
+  │  JWT（含 tenant_id）+ SSE
   ▼
 FastAPI Web 应用（web_app.py）
-  ├── 登录鉴权与角色检查（auth.py）
-  ├── 会话 API / 并发锁（web_app.py）
-  ├── AgentState 持久化（business.py + SQLite）
-  └── AgentScope Agent
-        ├── DashScopeChatModel / OpenAIChatModel
-        ├── Toolkit 业务工具
-        │     ├── 订单查询（只读）
-        │     ├── 工单查询（只读）
-        │     ├── 创建工单（写入，需要确认）
-        │     └── 关闭工单（写入，需要确认）
-        └── AgentEvent / Msg 流式事件
+  ├── 登录鉴权与租户角色检查（auth.py + business.py）
+  ├── 会话 API / 并发锁 / AgentState 持久化
+  ├── 单 Agent 业务助手
+  │     └── 租户与用户双重绑定的订单、工单工具
+  └── 子 Agent 编排（meal_orchestration.py）
+        ├── 需求路由
+        ├── 需求整理
+        ├── 菜单草案
+        ├── 方案审查
+        └── 汇总输出
 ```
 
 当前“真实业务工具”是真实 SQLite CRUD，不是硬编码返回值。示例业务域为订单与客服工单。接入公司系统时，按第 6 节把工具内部替换为你的 HTTP API、数据库或 MCP Server 即可。
+
+### 1.1 两个现有项目的映射结论
+
+对 `ai-project/services/llm-service` 和 `aicanwen-platform` 做静态研究后，结论是：**两者都可以用 AgentScope 实现核心关系，但不应原样复制全部基础设施。**
+
+| 来源项目 | 原始概念 | 本项目实现 | 边界 |
+|---|---|---|---|
+| llm-service | `MainRouterAgent` 动态路由 | `MealRoute` 结构化路由 | 仅演示食谱规划路由 |
+| llm-service | Profile、Nutrition、Menu Generation、Review | 需求整理、菜单草案、方案审查、汇总输出 | 只实现调用关系，不实现食谱算法 |
+| llm-service | 多意图串行移交 | 手动串行调用独立 Agent，并通过 `observe()` 传递结果 | 未实现多套菜单服务端并行、OCR 和任务轮询 |
+| platform | Tenant、User、Role、Permission | `tenants`、`tenant_memberships`、JWT 租户角色 | 角色按租户隔离，不做全局超管 |
+| platform | 用户 M:N 租户 | 同一用户可加入多个租户，前端可切换 | 未复制 OAuth2 Client、菜单树和组织树 |
+| platform | 组织查询附加 `tenant_id` | 订单、工单、会话、审计查询同时限定 `tenant_id` 和 `user_id` | SQLite 单实例演示，生产建议 PostgreSQL 复合约束 |
+
+AgentScope 负责 Agent、消息、工具、状态和事件；数据库迁移、租约、幂等、Redis、对象存储和公司 API 仍应由应用层实现。
 
 ## 2. 本地启动
 
@@ -50,6 +64,8 @@ Windows PowerShell 激活虚拟环境的命令是：
 ```dotenv
 AGENT_PROVIDER=dashscope
 DASHSCOPE_MODEL=qwen-plus
+MAX_ITERS=12
+SUBAGENT_STAGE_TIMEOUT=90
 DATABASE_PATH=.runtime/business.sqlite3
 BOOTSTRAP_ADMIN_USERNAME=admin
 DEMO_USERNAME=demo
@@ -81,10 +97,12 @@ PYTHONUTF8=1 .venv/Scripts/python.exe run_demo.py 10
 
 首次启动会自动：
 
-1. 创建用户、订单、工单、会话、审计日志表。
-2. 初始化管理员与演示用户。
+1. 创建用户、租户、租户成员、订单、工单、会话、审计日志表。
+2. 初始化管理员与演示用户，并为它们创建默认租户。
 3. 为演示用户插入 3 个示例订单和 1 个示例工单。
-4. 启用 SQLite WAL 与外键约束。
+4. 创建第二演示租户并加入演示用户，用于验证租户切换与隔离。
+5. 启用 SQLite WAL 与外键约束。
+6. 如果检测到旧版数据库，会自动补充 `tenant_id` 并回填历史数据。
 
 建议依次测试：
 
@@ -94,6 +112,8 @@ PYTHONUTF8=1 .venv/Scripts/python.exe run_demo.py 10
 - 在审批卡片中批准或拒绝
 - 刷新页面，确认历史会话仍然存在
 - 退出后换管理员登录，确认看不到演示用户的私有会话
+- 用演示账号切换租户，确认订单和会话列表随租户变化
+- 点击“运行子 Agent 菜单编排”，查看五个阶段的调用轨迹
 
 ## 3. 循序渐进学习 AgentScope
 
@@ -112,7 +132,8 @@ PYTHONUTF8=1 .venv/Scripts/python.exe run_demo.py 10
 | 07 | `python run_demo.py 07` | `TeamPipeline` 团队委派 | 调整成员职责 |
 | 08 | `python run_demo.py 08` | 上下文压缩与工具结果截断 | 观察压缩前后消息数 |
 | 09 | `python run_demo.py 09` | OpenTelemetry 与回复预算 | 接入真实 OTLP Collector |
-| 10 | `python run_demo.py 10` | 完整 Web 业务应用 | 走通登录、工具、审批、持久化 |
+| 10 | `python run_demo.py 10` | 多租户业务 Web 应用 | 切换租户并验证数据隔离 |
+| 11 | `python run_demo.py 11` | 子 Agent 串行编排 | 观察路由、需求、草案、审查、汇总 |
 
 ### 3.1 模型层
 
@@ -191,23 +212,50 @@ state = AgentState.model_validate_json(state_json)
 
 多 Agent 适合角色、上下文或工具权限需要隔离的场景。简单问答不要强行拆成多个 Agent。
 
+### 3.6 从 llm-service 提炼的子 Agent 编排
+
+`meal_orchestration.py` 使用五个独立 Agent，阶段之间严格串行：
+
+```text
+用户请求
+  → 需求路由（结构化输出 MealRoute）
+  → 需求整理（人数、天数、预算、过敏等约束）
+  → 菜单草案（只生成餐次和菜品结构）
+  → 方案审查（缺项、过敏冲突、约束覆盖）
+  → 汇总输出（最终结果与后续算法边界）
+```
+
+实现要点：
+
+- 每个 Agent 有独立 `AgentState`，避免角色上下文互相污染。
+- 下游 Agent 通过 `observe()` 接收上游 `Msg`，而不是把全部历史拼成一段字符串。
+- 路由使用 `structured_schema=MealRoute`，输出受 Pydantic 校验。
+- 每个阶段有超时；失败阶段会记录在 trace 中，后续阶段停止执行。
+- Router 与 worker 分别使用模型实例，请求结束后关闭客户端，避免 Web 多请求泄漏连接。
+- 当前只验证调用关系，不实现营养计算、食谱生成算法、OCR、多菜单并行或任务轮询。
+
+如果后续需要“同轮并行”，可把无依赖成员交给 `TeamPipeline`；如果需要动态多意图串行移交，则继续使用本例的手动编排。两者不要混为一谈。
+
 ## 4. 认证、鉴权与数据隔离
 
 ### 4.1 当前实现
 
 - 密码使用 `scrypt` 加盐哈希，不保存明文。
-- 登录签发 JWT，默认 120 分钟过期。
+- 登录签发 JWT，默认 120 分钟过期，令牌包含 `tenant_id` 和租户内角色。
 - API 使用 `Authorization: Bearer <token>`。
-- 普通用户与管理员通过 `role` 区分。
-- 会话查询同时校验 `user_id` 和 `session_id`。
-- 业务工具通过闭包绑定当前用户，模型不能传入任意 `user_id`。
-- 管理员审计接口要求 `admin` 角色。
+- 用户与租户为 M:N 关系，角色保存在 `tenant_memberships`，同一用户在不同租户可有不同角色。
+- 每个请求都会回库校验成员资格和角色，令牌中的过期权限不会继续生效。
+- 会话查询同时校验 `tenant_id`、`user_id` 和 `session_id`。
+- 业务工具通过闭包绑定当前租户和用户，模型不能传入任意 `tenant_id` 或 `user_id`。
+- 管理员只能查看当前租户的工单和审计，不具备跨租户全局权限。
 
 ### 4.2 关键边界
 
 - 未登录访问业务 API 返回 401。
-- 访问他人会话返回 404，避免暴露资源是否存在。
+- 访问他人或其它租户的会话返回 404，避免暴露资源是否存在。
 - 普通用户访问管理员接口返回 403。
+- 切换租户必须重新签发令牌，前端同时清空当前会话选择。
+- 旧版 JWT 缺少 `tenant_id` 时会被拒绝，需要重新登录。
 - 前端令牌保存在 `sessionStorage`，不放在 URL 或 LocalStorage。
 - 所有动态文本使用 `textContent` 渲染，避免 XSS。
 
@@ -217,7 +265,8 @@ state = AgentState.model_validate_json(state_json)
 
 - 刷新令牌、令牌撤销和设备会话管理。
 - 登录限流、验证码或 SSO。
-- 组织/租户级 RBAC。
+- 组织树、项目空间、细粒度 Permission 和跨租户委派（当前仅实现租户内 user/admin）。
+- PostgreSQL 复合外键、更细的数据范围和行级安全。
 - 密钥托管与定期轮换。
 - 集中日志、告警和审计保留策略。
 
@@ -241,7 +290,7 @@ state = AgentState.model_validate_json(state_json)
 
 确认接口会校验：
 
-- 会话属于当前用户。
+- 会话属于当前租户和当前用户。
 - `reply_id` 与当前暂停回复一致。
 - 确认项与待审批工具调用完全匹配。
 
@@ -254,7 +303,7 @@ state = AgentState.model_validate_json(state_json)
 在 `business.py` 中：
 
 1. 添加表结构和索引。
-2. 编写带 `user_id` 条件的数据访问函数。
+2. 编写同时带 `tenant_id` 和 `user_id` 条件的数据访问函数。
 3. 在 `make_business_toolkit()` 中创建闭包工具。
 4. 查询工具设置 `is_read_only=True`。
 5. 写入工具保持 `is_read_only=False`。
@@ -280,7 +329,8 @@ async def get_customer_order(order_no: str) -> str:
 安全要求：
 
 - URL 必须来自受控环境变量，不能由模型任意指定。
-- 服务端仍需按当前用户校验订单归属。
+- 服务端仍需按当前租户和用户校验订单归属。
+- 内部 API 使用受控服务令牌，并传递可验证的租户上下文；不能信任模型生成的租户 ID。
 - 设置超时、重试上限和响应体大小限制。
 - 不把 API 密钥写入系统提示或工具描述。
 - 只开放必要端点，不提供任意 HTTP 请求工具。
@@ -358,13 +408,16 @@ PYTHONUTF8=1 .venv/Scripts/python.exe -m pytest -q
 - 多 Agent 委派。
 - 密码哈希与 JWT。
 - 未登录访问。
-- 用户间会话隔离。
+- 用户间与租户间会话隔离。
+- 租户切换、租户内角色和业务数据隔离。
+- 旧数据库自动补充租户字段并回填。
+- 子 Agent 结构化路由与五阶段串行执行。
 - 管理员权限。
 - 数据库数据隔离。
 - 会话重启恢复。
 - 写操作审批与审计。
 
-模拟模型只能验证框架编排，不能验证真实模型的语义质量。真实模型验证应单独执行 Demo 00、01、03 和 Web 业务对话。
+模拟模型只能验证框架编排，不能验证真实模型的语义质量。真实模型验证应单独执行 Demo 00、01、03、11 和 Web 业务对话。
 
 ## 9. 常见问题
 
@@ -372,6 +425,10 @@ PYTHONUTF8=1 .venv/Scripts/python.exe -m pytest -q
 
 - 确认 `.env` 中密码至少 12 个字符。
 - 修改密码环境变量不会自动更新已有用户密码；需要删除对应测试数据库后重新初始化，或实现密码重置流程。
+
+### 切换租户后看不到原会话
+
+这是预期行为。会话绑定创建时的租户，切回原租户后即可恢复。不要为了共享会话而移除 `tenant_id` 条件。
 
 ### 模型调用失败
 
@@ -401,7 +458,8 @@ PYTHONUTF8=1 .venv/Scripts/python.exe -m pytest -q
 |---|---|
 | `demos/common.py` | Provider、Agent、事件渲染与模型清理 |
 | `demos/00_doctor.py` 至 `demos/09_observability.py` | 渐进式教学 Demo |
-| `business.py` | SQLite、业务数据、工具、审计与会话存储 |
+| `business.py` | SQLite、租户成员、业务数据、工具、审计与会话存储 |
+| `meal_orchestration.py` | 子 Agent 结构化路由与串行编排 |
 | `auth.py` | scrypt 密码哈希与 JWT |
 | `web_app.py` | FastAPI、登录、会话、SSE、HITL 与前端 |
 | `tests/mock_provider.py` | 离线模型服务 |
@@ -417,7 +475,8 @@ PYTHONUTF8=1 .venv/Scripts/python.exe -m pytest -q
 3. 跑通 Demo 06–07，理解多 Agent 的两种组织方式。
 4. 跑通 Demo 08–09，理解上下文与可观测性。
 5. 在 Web 中走通订单查询和工单审批。
-6. 阅读 `business.py`，自己增加一个只读工具。
+6. 阅读 `business.py`，自己增加一个同时绑定租户和用户的只读工具。
 7. 增加一个写工具，并验证审批与审计。
-8. 用 Docker Compose 重启服务，验证会话仍在。
-9. 最后再考虑 SSO、PostgreSQL、MCP、监控和生产发布。
+8. 运行 Demo 11，观察五个子 Agent 的状态隔离与消息传递。
+9. 用 Docker Compose 重启服务，验证会话仍在。
+10. 最后再考虑 SSO、PostgreSQL、组织树、MCP、监控和生产发布。
