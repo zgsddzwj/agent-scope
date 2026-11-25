@@ -27,10 +27,11 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8")
     if len(sys.argv) < 2 or sys.argv[1] in {"-h", "--help", "list"}:
         print("AgentScope 2.0.12 渐进式示例\n")
-        print("用法：python run_demo.py <编号> [参数]\n")
+        print("用法：uv run python run_demo.py <编号> [参数]\n")
         for number, (title, _) in DEMOS.items():
             print(f"  {number}  {title}")
-        print("\n首次运行：python -m pip install -r requirements.txt")
+        print("\n首次运行：uv sync --frozen")
+        print("更新依赖：uv lock && uv sync")
         print("配置模型：复制 .env.example 为 .env，然后填写 API Key")
         return
 

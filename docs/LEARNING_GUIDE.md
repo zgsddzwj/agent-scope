@@ -1,6 +1,6 @@
 # AgentScope 2.0.12 学习与业务接入指南
 
-本项目已经接入 AgentScope 2.0.12、百炼模型、SQLite 业务工具、持久化会话、JWT 登录鉴权、租户隔离、写操作人工审批、子 Agent 串行编排和 Docker Compose 部署。
+本项目已经接入 AgentScope 2.0.12、百炼模型、SQLite 业务工具、持久化会话、JWT 登录鉴权、租户隔离、写操作人工审批、子 Agent 串行编排和 Docker Compose 部署。Python 依赖与虚拟环境统一由 `uv` 管理。
 
 > 安全提醒：API Key 已经写入本机 `.env`，该文件被 `.gitignore` 和 `.dockerignore` 忽略。由于 Key 曾出现在聊天记录中，完成验证后建议在百炼控制台轮换。登录账号和随机密码位于 `.env` 的 `BOOTSTRAP_ADMIN_*` 与 `DEMO_*` 配置中，不要提交或公开这些值。
 
@@ -47,14 +47,16 @@ AgentScope 负责 Agent、消息、工具、状态和事件；数据库迁移、
 在项目根目录执行：
 
 ```bash
-python -m venv .venv
-.venv/Scripts/python.exe -m pip install -r requirements.txt
+uv sync --frozen
 ```
 
-Windows PowerShell 激活虚拟环境的命令是：
+`uv` 会根据 `.python-version` 选择 Python 3.12，创建 `.venv`，并按 `uv.lock` 安装运行与测试依赖。后续无需手动激活虚拟环境，统一使用 `uv run` 执行命令。
 
-```powershell
-.venv\Scripts\Activate.ps1
+修改依赖时先编辑 `pyproject.toml`，再执行：
+
+```bash
+uv lock
+uv sync
 ```
 
 ### 2.2 检查配置
@@ -76,7 +78,7 @@ ACCESS_TOKEN_MINUTES=120
 查看用户名，不输出密码：
 
 ```bash
-PYTHONUTF8=1 .venv/Scripts/python.exe -c "import os; from dotenv import load_dotenv; load_dotenv(); print(os.getenv('DEMO_USERNAME'), os.getenv('BOOTSTRAP_ADMIN_USERNAME'))"
+PYTHONUTF8=1 uv run python -c "import os; from dotenv import load_dotenv; load_dotenv(); print(os.getenv('DEMO_USERNAME'), os.getenv('BOOTSTRAP_ADMIN_USERNAME'))"
 ```
 
 密码请直接在本机 `.env` 中查看 `DEMO_USER_PASSWORD` 和 `BOOTSTRAP_ADMIN_PASSWORD`。
@@ -84,13 +86,13 @@ PYTHONUTF8=1 .venv/Scripts/python.exe -c "import os; from dotenv import load_dot
 ### 2.3 启动 Web 应用
 
 ```bash
-PYTHONUTF8=1 .venv/Scripts/python.exe -m web_app
+PYTHONUTF8=1 uv run python -m web_app
 ```
 
 也可以运行：
 
 ```bash
-PYTHONUTF8=1 .venv/Scripts/python.exe run_demo.py 10
+PYTHONUTF8=1 uv run python run_demo.py 10
 ```
 
 打开 `http://127.0.0.1:8000`，使用 `.env` 中的账号登录。
@@ -351,7 +353,7 @@ docker compose ps
 docker compose logs -f app
 ```
 
-应用默认只绑定宿主机 `127.0.0.1:8000`。数据保存在命名卷 `agentscope-data`，容器重建不会丢失。
+应用默认只绑定宿主机 `127.0.0.1:8000`。镜像构建使用 `uv sync --frozen --no-dev`，只安装 `uv.lock` 中的生产依赖；数据保存在命名卷 `agentscope-data`，容器重建不会丢失。
 
 停止：
 
@@ -398,7 +400,7 @@ docker compose cp app:/data/backup.sqlite3 .runtime/
 运行离线测试：
 
 ```bash
-PYTHONUTF8=1 .venv/Scripts/python.exe -m pytest -q
+PYTHONUTF8=1 uv run pytest -q
 ```
 
 测试使用本地 OpenAI 兼容模拟服务，不消耗真实模型额度，覆盖：
