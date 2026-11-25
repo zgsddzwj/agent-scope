@@ -17,7 +17,7 @@ RUN groupadd --system app \
     && chown -R app:app /data
 
 COPY pyproject.toml uv.lock .python-version ./
-RUN uv sync --frozen --no-dev --no-cache
+RUN uv sync --frozen --no-dev --no-install-project --no-cache
 
 COPY --chown=app:app . ./
 

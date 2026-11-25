@@ -121,21 +121,23 @@ PYTHONUTF8=1 uv run python run_demo.py 10
 
 先运行教学 Demo，再阅读业务版本。所有 Demo 都使用同一套模型配置。
 
+推荐通过 `run_demo.py` 运行。也可以直接执行脚本或模块，例如 `uv run python demos/00_doctor.py`、`uv run python -m demos.00_doctor`；`uv` 会把本项目作为可编辑包安装，因此两种方式都能导入 `demos` 和业务模块。
+
 | 顺序 | 命令 | 核心知识点 | 建议练习 |
 |---|---|---|---|
-| 00 | `python run_demo.py 00` | 环境、Provider、模型与 Key 检查 | 切换 DashScope/OpenAI Provider |
-| 01 | `python run_demo.py 01 "用一句话介绍 AgentScope"` | 模型直接调用与流式响应 | 加入 `--no-stream` 对比 |
-| 02 | `python run_demo.py 02` | Pydantic 结构化输出 | 增加一个字段并观察校验 |
-| 03 | `python run_demo.py 03` | ReAct 循环与工具调用 | 增加一个确定性工具 |
-| 04 | `python run_demo.py 04` | `AgentEvent` 流式事件 | 识别模型、文本、工具事件 |
-| 05 | `python run_demo.py 05 save` | `AgentState` 序列化 | 修改消息后恢复 |
-| 05 | `python run_demo.py 05 resume` | 跨进程恢复上下文 | 重启后再追问 |
-| 06 | `python run_demo.py 06` | 手动多 Agent 协作 | 增加一个评审角色 |
-| 07 | `python run_demo.py 07` | `TeamPipeline` 团队委派 | 调整成员职责 |
-| 08 | `python run_demo.py 08` | 上下文压缩与工具结果截断 | 观察压缩前后消息数 |
-| 09 | `python run_demo.py 09` | OpenTelemetry 与回复预算 | 接入真实 OTLP Collector |
-| 10 | `python run_demo.py 10` | 多租户业务 Web 应用 | 切换租户并验证数据隔离 |
-| 11 | `python run_demo.py 11` | 子 Agent 串行编排 | 观察路由、需求、草案、审查、汇总 |
+| 00 | `uv run python run_demo.py 00` | 环境、Provider、模型与 Key 检查 | 切换 DashScope/OpenAI Provider |
+| 01 | `uv run python run_demo.py 01 "用一句话介绍 AgentScope"` | 模型直接调用与流式响应 | 加入 `--no-stream` 对比 |
+| 02 | `uv run python run_demo.py 02` | Pydantic 结构化输出 | 增加一个字段并观察校验 |
+| 03 | `uv run python run_demo.py 03` | ReAct 循环与工具调用 | 增加一个确定性工具 |
+| 04 | `uv run python run_demo.py 04` | `AgentEvent` 流式事件 | 识别模型、文本、工具事件 |
+| 05 | `uv run python run_demo.py 05 save` | `AgentState` 序列化 | 修改消息后恢复 |
+| 05 | `uv run python run_demo.py 05 resume` | 跨进程恢复上下文 | 重启后再追问 |
+| 06 | `uv run python run_demo.py 06` | 手动多 Agent 协作 | 增加一个评审角色 |
+| 07 | `uv run python run_demo.py 07` | `TeamPipeline` 团队委派 | 调整成员职责 |
+| 08 | `uv run python run_demo.py 08` | 上下文压缩与工具结果截断 | 观察压缩前后消息数 |
+| 09 | `uv run python run_demo.py 09` | OpenTelemetry 与回复预算 | 接入真实 OTLP Collector |
+| 10 | `uv run python run_demo.py 10` | 多租户业务 Web 应用 | 切换租户并验证数据隔离 |
+| 11 | `uv run python run_demo.py 11` | 子 Agent 串行编排 | 观察路由、需求、草案、审查、汇总 |
 
 ### 3.1 模型层
 
@@ -353,7 +355,7 @@ docker compose ps
 docker compose logs -f app
 ```
 
-应用默认只绑定宿主机 `127.0.0.1:8000`。镜像构建使用 `uv sync --frozen --no-dev`，只安装 `uv.lock` 中的生产依赖；数据保存在命名卷 `agentscope-data`，容器重建不会丢失。
+应用默认只绑定宿主机 `127.0.0.1:8000`。镜像构建使用 `uv sync --frozen --no-dev --no-install-project`，只安装 `uv.lock` 中的生产依赖；应用源码在依赖安装后复制，数据保存在命名卷 `agentscope-data`，容器重建不会丢失。
 
 停止：
 
@@ -434,7 +436,7 @@ PYTHONUTF8=1 uv run pytest -q
 
 ### 模型调用失败
 
-- 运行 `python run_demo.py 00`。
+- 运行 `uv run python run_demo.py 00`。
 - 检查 Key、模型名、Provider 和账户额度。
 - 百炼默认使用 SDK 官方地址；只有使用兼容网关时才设置 `DASHSCOPE_BASE_URL`。
 

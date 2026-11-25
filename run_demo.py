@@ -37,7 +37,7 @@ def main() -> None:
 
     number = sys.argv[1]
     if number not in DEMOS:
-        raise SystemExit(f"未知示例编号：{number}。使用 python run_demo.py list 查看。")
+        raise SystemExit(f"未知示例编号：{number}。使用 uv run python run_demo.py list 查看。")
     module = DEMOS[number][1]
     result = subprocess.run([sys.executable, "-m", module, *sys.argv[2:]], cwd=ROOT)
     raise SystemExit(result.returncode)

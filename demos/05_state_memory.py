@@ -36,7 +36,7 @@ async def save() -> None:
 
 async def resume() -> None:
     if not STATE_FILE.exists():
-        raise SystemExit("没有找到状态文件，请先运行：python run_demo.py 05 save")
+        raise SystemExit("没有找到状态文件，请先运行：uv run python run_demo.py 05 save")
     state = AgentState.model_validate_json(STATE_FILE.read_text(encoding="utf-8"))
     print(f"已恢复会话：{state.session_id}，历史消息数：{len(state.context)}")
     agent = make_agent(state)
